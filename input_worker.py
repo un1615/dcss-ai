@@ -93,6 +93,13 @@ def press_key(char: str):
     win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
 
 
+def press_period():
+    VK_OEM_PERIOD = 0xBE  # '.' key
+    win32api.keybd_event(VK_OEM_PERIOD, 0, 0, 0)
+    time.sleep(0.02)
+    win32api.keybd_event(VK_OEM_PERIOD, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+
 def press_esc():
     win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
     time.sleep(0.02)
@@ -148,8 +155,8 @@ if __name__ == "__main__":
             continue
 
         if cmd == "WAIT":
-            press_key("5")
-            print("[input_worker] sent: 5 (wait)")
+            press_period()
+            print("[input_worker] sent: . (wait)")
 
         elif cmd == "AUTOEXPLORE":
             press_key("o")
@@ -162,6 +169,23 @@ if __name__ == "__main__":
         elif cmd == "ESC":
             press_esc()
             print("[input_worker] sent: ESC")
-
+        elif cmd == "ATTACK":
+            # Tab = attack nearest enemy (DCSS 기본)
+            win32api.keybd_event(win32con.VK_TAB, 0, 0, 0)
+            time.sleep(0.02)
+            win32api.keybd_event(win32con.VK_TAB, 0, win32con.KEYEVENTF_KEYUP, 0)
+            print("[input_worker] sent: TAB (attack)")
+        elif cmd == "MORE":
+            win32api.keybd_event(win32con.VK_SPACE, 0, 0, 0)
+            time.sleep(0.02)
+            win32api.keybd_event(win32con.VK_SPACE, 0, win32con.KEYEVENTF_KEYUP, 0)
+            print("[input_worker] sent: SPACE (more)")
+        elif cmd.startswith("MOVE "):
+            parts = cmd.split()
+            if len(parts) == 2 and len(parts[1]) == 1:
+                press_key(parts[1])
+                print(f"[input_worker] sent: {parts[1]} (move)")
+            else:
+                print(f"[input_worker] bad MOVE cmd={cmd}")
         else:
             print(f"[input_worker] unknown cmd={cmd}")
