@@ -217,22 +217,33 @@ def opposite_dir(k):
     return opp.get(k) if k else None
 
 
-def choose_escape_move(last_move_key, retreat_last_choice):
+def choose_escape_move(last_move_key, retreat_last_choice, avoid_dir=None):
     move_keys = ["h", "j", "k", "l", "y", "u", "b", "n"]
 
     prev = retreat_last_choice
     opp = opposite_dir(last_move_key)
 
     candidates = []
-    if opp:
+
+    # ✅ 1) opp를 무조건 1순위로 두지 말고,
+    #    "avoid_dir(되돌아가기 금지)"가 아니면만 넣기
+    if opp and opp != avoid_dir:
         candidates.append(opp)
 
+    # ✅ 2) 나머지 후보 채우기(직전 반복 방지 + avoid_dir 제외)
     for k in move_keys:
-        if k != prev and k not in candidates:
+        if k == prev:
+            continue
+        if avoid_dir and k == avoid_dir:
+            continue
+        if k not in candidates:
             candidates.append(k)
 
+    # ✅ 3) 안전장치: 후보가 비면 avoid_dir 제한 풀고 다시 채우기
     if not candidates:
-        candidates = move_keys[:]
+        for k in move_keys:
+            if k != prev and k not in candidates:
+                candidates.append(k)
 
     return candidates[0], opp, prev
 
@@ -272,6 +283,7 @@ if __name__ == "__main__":
     last_move_key = None  # 마지막으로 보낸 MOVE 방향 (h/j/k/l/y/u/b/n)
     retreat_last_choice = None  # RETREAT에서 최근 선택한 키(반복 방지용)
     NO_MONSTERS_CONFIRM = 2  # 2프레임 연속 "없음"이면 진짜 없음으로 인정
+    avoid_dir = None  # 바로 직후 되돌아가기 금지 방향
     # ===== FIGHT stabilization (Day 5) =====
     FIGHT_ATTACK_COOLDOWN_SEC = 1.0
     FIGHT_RECHECK_INTERVAL_SEC = 1.0
@@ -312,9 +324,10 @@ if __name__ == "__main__":
                     moves = []
                     for _ in range(3):
                         key, opp, prev = choose_escape_move(
-                            last_move_key, retreat_last_choice
+                            last_move_key, retreat_last_choice, avoid_dir
                         )
                         moves.append(key)
+                        avoid_dir = opposite_dir(key)
                         last_move_key = key
                         retreat_last_choice = key
 
@@ -345,7 +358,7 @@ if __name__ == "__main__":
                 # PANIC: 계속 도망 (큐가 비면 한 칸 이동) - RETREAT 로직 재사용
                 if is_queue_empty(QUEUE_PATH):
                     key, opp, prev = choose_escape_move(
-                        last_move_key, retreat_last_choice
+                        last_move_key, retreat_last_choice, avoid_dir
                     )
 
                     with open(QUEUE_PATH, "w", encoding="utf-8") as f:
@@ -353,6 +366,7 @@ if __name__ == "__main__":
 
                     last_move_key = key
                     retreat_last_choice = key
+                    avoid_dir = opposite_dir(key)
 
                     print(f"[PLAN] PANIC -> queued MOVE {key} (opp={opp}, prev={prev})")
 
@@ -519,7 +533,7 @@ if __name__ == "__main__":
                         elif ai_state == "RETREAT":
                             if is_queue_empty(QUEUE_PATH):
                                 key, opp, prev = choose_escape_move(
-                                    last_move_key, retreat_last_choice
+                                    last_move_key, retreat_last_choice, avoid_dir
                                 )
 
                                 with open(QUEUE_PATH, "w", encoding="utf-8") as f:
@@ -527,6 +541,7 @@ if __name__ == "__main__":
 
                                 last_move_key = key
                                 retreat_last_choice = key
+                                avoid_dir = opposite_dir(key)
 
                                 print(
                                     f"[PLAN] RETREAT -> queued MOVE {key} (opp={opp}, prev={prev})"
