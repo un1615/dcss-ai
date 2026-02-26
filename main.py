@@ -16,10 +16,10 @@ CMD_PATH = os.path.join(OUT_DIR, "command.txt")
 QUEUE_PATH = os.path.join(OUT_DIR, "queue.txt")
 
 # HP thresholds (with hysteresis)
-CAUTION_ENTER = 0.55
-CAUTION_EXIT = 0.65
-PANIC_ENTER = 0.30
-PANIC_EXIT = 0.40
+CAUTION_ENTER = 0.75
+CAUTION_EXIT = 0.90
+PANIC_ENTER = 0.45
+PANIC_EXIT = 0.65
 
 
 def kill_process_tree(pid: int) -> None:
@@ -203,6 +203,40 @@ def evaluate_threat(flags, mode):
     return "MID"
 
 
+def opposite_dir(k):
+    opp = {
+        "h": "l",
+        "l": "h",
+        "j": "k",
+        "k": "j",
+        "y": "n",
+        "n": "y",
+        "u": "b",
+        "b": "u",
+    }
+    return opp.get(k) if k else None
+
+
+def choose_escape_move(last_move_key, retreat_last_choice):
+    move_keys = ["h", "j", "k", "l", "y", "u", "b", "n"]
+
+    prev = retreat_last_choice
+    opp = opposite_dir(last_move_key)
+
+    candidates = []
+    if opp:
+        candidates.append(opp)
+
+    for k in move_keys:
+        if k != prev and k not in candidates:
+            candidates.append(k)
+
+    if not candidates:
+        candidates = move_keys[:]
+
+    return candidates[0], opp, prev
+
+
 if __name__ == "__main__":
     os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -235,6 +269,8 @@ if __name__ == "__main__":
     repeat_esc_sent = False
     more_sent = False
     no_monsters_streak = 0
+    last_move_key = None  # 마지막으로 보낸 MOVE 방향 (h/j/k/l/y/u/b/n)
+    retreat_last_choice = None  # RETREAT에서 최근 선택한 키(반복 방지용)
     NO_MONSTERS_CONFIRM = 2  # 2프레임 연속 "없음"이면 진짜 없음으로 인정
     # ===== FIGHT stabilization (Day 5) =====
     FIGHT_ATTACK_COOLDOWN_SEC = 1.0
@@ -248,7 +284,7 @@ if __name__ == "__main__":
             text = read_dump_text()
             hp = parse_hp(text)
             ratio = compute_hp_ratio(hp)
-
+            now = time.time()
             if ratio is None:
                 print("[HP] not found (frame skip) -> hold actions")
                 # 안전: 입력 큐가 비어있다면 WAIT 1번만 넣어도 되고(선택)
@@ -272,10 +308,23 @@ if __name__ == "__main__":
 
             # PANIC에 "진입한 순간"에만 계획(큐) 작성 — 스팸 방지
             if mode == "PANIC" and last_mode != "PANIC":
-                os.makedirs(OUT_DIR, exist_ok=True)
-                with open(QUEUE_PATH, "w", encoding="utf-8") as f:
-                    f.write("MOVE h\nMOVE j\nMOVE l\n")
-                print("[PLAN] wrote PANIC queue: MOVE x3")
+                if is_queue_empty(QUEUE_PATH):
+                    moves = []
+                    for _ in range(3):
+                        key, opp, prev = choose_escape_move(
+                            last_move_key, retreat_last_choice
+                        )
+                        moves.append(key)
+                        last_move_key = key
+                        retreat_last_choice = key
+
+                    with open(QUEUE_PATH, "w", encoding="utf-8") as f:
+                        for k in moves:
+                            f.write(f"MOVE {k}\n")
+
+                    print(f"[PLAN] wrote PANIC queue: MOVE x3 -> {moves}")
+                else:
+                    print("[INFO] PANIC entered but queue not empty (skip preload)")
 
             if mode != last_mode:
                 print(f"[MODE] {last_mode} -> {mode} (hp={stable_ratio*100:.1f}%)")
@@ -284,11 +333,29 @@ if __name__ == "__main__":
             # ===== Explore policy (FSM 기반) =====
 
             if mode == "PANIC":
-                # PANIC: 계속 도망 (큐가 비면 한 칸 이동)
+                # PANIC 중에도 --more--는 최우선 처리 (입력 꼬임 방지)
+                if "--more--" in text.lower():
+                    if is_queue_empty(QUEUE_PATH):
+                        with open(QUEUE_PATH, "w", encoding="utf-8") as f:
+                            f.write("MORE\n")
+                        print("[PLAN] PANIC: more prompt -> queued MORE")
+                    print("[INFO] PANIC: more prompt shown, skip moves")
+                    time.sleep(1.0)
+                    continue
+                # PANIC: 계속 도망 (큐가 비면 한 칸 이동) - RETREAT 로직 재사용
                 if is_queue_empty(QUEUE_PATH):
+                    key, opp, prev = choose_escape_move(
+                        last_move_key, retreat_last_choice
+                    )
+
                     with open(QUEUE_PATH, "w", encoding="utf-8") as f:
-                        f.write("MOVE h\n")  # 일단 고정: 왼쪽(안전 확인용)
-                    print("[PLAN] PANIC -> queued MOVE h")
+                        f.write(f"MOVE {key}\n")
+
+                    last_move_key = key
+                    retreat_last_choice = key
+
+                    print(f"[PLAN] PANIC -> queued MOVE {key} (opp={opp}, prev={prev})")
+
                 print("[INFO] PANIC -> skip explore policy")
 
             else:
@@ -310,8 +377,6 @@ if __name__ == "__main__":
                 )
                 monster_edge = seen_now and not last_monster_seen
                 last_monster_seen = seen_now
-
-                now = time.time()
 
                 # ---- FSM transition ----
                 just_entered_alert = False
@@ -376,9 +441,16 @@ if __name__ == "__main__":
                     )
 
                     if no_monsters:
-                        print("[STATE] RETREAT -> EXPLORE (no monsters)")
-                        ai_state = "EXPLORE"
-                        alert_action_done = False
+                        if mode in ("CAUTION", "PANIC"):
+                            # 저HP면 “안전 모드” 유지: 바로 탐색 복귀 금지
+                            print("[STATE] RETREAT hold (no monsters but low HP)")
+                            retreat_until = max(
+                                retreat_until, now + 1.0
+                            )  # 최소 1초 더 유지(작게)
+                        else:
+                            print("[STATE] RETREAT -> EXPLORE (no monsters)")
+                            ai_state = "EXPLORE"
+                            alert_action_done = False
 
                     elif now >= retreat_until:
                         if mode in ("CAUTION", "PANIC") and flags.get(
@@ -446,13 +518,20 @@ if __name__ == "__main__":
 
                         elif ai_state == "RETREAT":
                             if is_queue_empty(QUEUE_PATH):
-                                import random
+                                key, opp, prev = choose_escape_move(
+                                    last_move_key, retreat_last_choice
+                                )
 
-                                move_keys = ["h", "j", "k", "l", "y", "u", "b", "n"]
-                                key = random.choice(move_keys)
                                 with open(QUEUE_PATH, "w", encoding="utf-8") as f:
                                     f.write(f"MOVE {key}\n")
-                                print(f"[PLAN] RETREAT -> queued MOVE {key}")
+
+                                last_move_key = key
+                                retreat_last_choice = key
+
+                                print(
+                                    f"[PLAN] RETREAT -> queued MOVE {key} (opp={opp}, prev={prev})"
+                                )
+
                             print("[INFO] RETREAT: trying to move away")
 
                         elif ai_state == "FIGHT":
