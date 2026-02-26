@@ -236,6 +236,12 @@ if __name__ == "__main__":
     more_sent = False
     no_monsters_streak = 0
     NO_MONSTERS_CONFIRM = 2  # 2프레임 연속 "없음"이면 진짜 없음으로 인정
+    # ===== FIGHT stabilization (Day 5) =====
+    FIGHT_ATTACK_COOLDOWN_SEC = 1.0
+    FIGHT_RECHECK_INTERVAL_SEC = 1.0
+    fight_next_attack_time = 0.0
+    fight_next_recheck_time = 0.0
+
     try:
 
         while True:
@@ -244,7 +250,11 @@ if __name__ == "__main__":
             ratio = compute_hp_ratio(hp)
 
             if ratio is None:
-                print("[HP] not found (frame skip)")
+                print("[HP] not found (frame skip) -> hold actions")
+                # 안전: 입력 큐가 비어있다면 WAIT 1번만 넣어도 되고(선택)
+                # if is_queue_empty(QUEUE_PATH):
+                #     with open(QUEUE_PATH, "w", encoding="utf-8") as f:
+                #         f.write("WAIT\n")
                 time.sleep(1.0)
                 continue
 
@@ -342,6 +352,8 @@ if __name__ == "__main__":
                         else:
                             print("[STATE] ALERT -> FIGHT (HIGH: melee/breakout)")
                             ai_state = "FIGHT"
+                            fight_next_attack_time = 0.0
+                            fight_next_recheck_time = 0.0
 
                     elif threat == "MID":
                         # MID는 아직 보수적으로 후퇴 (나중에 FIGHT로 일부 전환)
@@ -444,15 +456,65 @@ if __name__ == "__main__":
                             print("[INFO] RETREAT: trying to move away")
 
                         elif ai_state == "FIGHT":
-                            if is_queue_empty(QUEUE_PATH):
-                                with open(QUEUE_PATH, "w", encoding="utf-8") as f:
-                                    f.write("ATTACK\n")
-                                print("[PLAN] FIGHT -> queued ATTACK (TAB)")
 
-                                # ✅ 공격 후 바로 ALERT로 복귀해서 재평가
-                                ai_state = "ALERT"
-                                alert_until = now + 0.5
-                                alert_action_done = False
+                            # ---- (1) 주기적 재평가 ----
+                            if now >= fight_next_recheck_time:
+                                threat = evaluate_threat(flags, mode)
+                                print(
+                                    f"[DEBUG] FIGHT recheck: threat={threat}, mode={mode}"
+                                )
+
+                                # 몬스터 완전 없음 확정
+                                if (not flags.get("monsters_present", False)) and (
+                                    no_monsters_streak >= NO_MONSTERS_CONFIRM
+                                ):
+                                    if mode in ("CAUTION", "PANIC"):
+                                        print(
+                                            "[STATE] FIGHT -> RETREAT (no monsters but low HP)"
+                                        )
+                                        ai_state = "RETREAT"
+                                        retreat_until = now + RETREAT_HOLD_SEC
+                                    else:
+                                        print(
+                                            "[STATE] FIGHT -> EXPLORE (confirmed no monsters)"
+                                        )
+                                        ai_state = "EXPLORE"
+                                        alert_action_done = False
+                                # HP 낮으면 즉시 후퇴
+                                elif mode in ("CAUTION", "PANIC"):
+                                    print("[STATE] FIGHT -> RETREAT (low HP)")
+                                    ai_state = "RETREAT"
+                                    retreat_until = now + RETREAT_HOLD_SEC
+
+                                # MID는 보수적으로 후퇴 유지
+                                elif threat == "MID":
+                                    print("[STATE] FIGHT -> RETREAT (MID)")
+                                    ai_state = "RETREAT"
+                                    retreat_until = now + RETREAT_HOLD_SEC
+
+                                fight_next_recheck_time = (
+                                    now + FIGHT_RECHECK_INTERVAL_SEC
+                                )
+
+                            # ---- (2) 공격 쿨다운 ----
+                            if ai_state == "FIGHT" and is_queue_empty(QUEUE_PATH):
+                                if (
+                                    flags.get("monsters_present", False)
+                                    and now >= fight_next_attack_time
+                                ):
+                                    with open(QUEUE_PATH, "w", encoding="utf-8") as f:
+                                        f.write("ATTACK\n")
+                                    fight_next_attack_time = (
+                                        now + FIGHT_ATTACK_COOLDOWN_SEC
+                                    )
+                                    print(
+                                        "[PLAN] FIGHT -> queued ATTACK (TAB, cooldown)"
+                                    )
+                                else:
+                                    if not flags.get("monsters_present", False):
+                                        print("[INFO] FIGHT: no monsters (skip attack)")
+                                    else:
+                                        print("[INFO] FIGHT: attack cooldown")
 
                         elif ai_state == "EXPLORE" and not flags.get(
                             "monsters_present", False
