@@ -14,6 +14,18 @@ OUT_DIR = r"C:\Users\Oh\Desktop\ai_dcss\run_logs"
 DUMP_PATH = os.path.join(OUT_DIR, "console_dump.txt")
 STATUS_PATH = os.path.join(OUT_DIR, "reader_status.log")
 
+import sys
+import msvcrt
+
+LOCK_PATH = os.path.join(OUT_DIR, "input_worker.lock")
+_lock_fp = open(LOCK_PATH, "w")
+
+try:
+    msvcrt.locking(_lock_fp.fileno(), msvcrt.LK_NBLCK, 1)
+except OSError:
+    print("[input_worker] another instance is already running -> exit")
+    sys.exit(0)
+
 
 def log(msg: str):
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -79,7 +91,7 @@ if __name__ == "__main__":
             # if now - last_beat >= 10.0:
             #     log("heartbeat: dumping ok")
             #     last_beat = now
-            time.sleep(1.0)
+            time.sleep(0.05)
         except Exception as e:
             log(f"worker ERROR: {repr(e)}")
-            time.sleep(1.0)
+            time.sleep(0.05)
