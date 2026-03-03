@@ -9,6 +9,8 @@ from collections import deque
 
 from action_to_queue import action_json_to_queue
 from policy_openai import choose_action_openai
+from webtiles_reader import get_state
+from webtiles_input import send_keys
 
 OUT_DIR = r"C:\Users\Oh\Desktop\ai_dcss\run_logs"
 DUMP_PATH = os.path.join(OUT_DIR, "console_dump.txt")
@@ -190,6 +192,25 @@ def build_obs(text: str, stable_ratio: float | None, extra: dict):
     }
     obs.update(extra or {})
     return obs
+
+
+def send_and_wait_turn(keys: str, max_wait_sec: float = 2.0, poll_sec: float = 0.05):
+    s0 = get_state()
+    t0 = s0.get("turn")
+
+    send_keys(keys)
+
+    start = time.time()
+    while True:
+        s1 = get_state()
+        t1 = s1.get("turn")
+        if t0 is not None and t1 is not None and t1 != t0:
+            return s0, s1
+
+        if time.time() - start > max_wait_sec:
+            return s0, s1
+
+        time.sleep(poll_sec)
 
 
 if __name__ == "__main__":
