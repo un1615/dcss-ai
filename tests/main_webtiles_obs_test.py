@@ -1,4 +1,4 @@
-from webtiles_client import WebTilesClient
+from webtiles.webtiles_client import WebTilesClient
 
 BASE_URL = "http://localhost:9090"
 USERNAME = "MinZZang"

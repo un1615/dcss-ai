@@ -7,10 +7,10 @@ import subprocess
 import re
 from collections import deque
 
-from action_to_queue import action_json_to_queue
-from policy_openai import choose_action_openai
-from webtiles_reader import get_state
-from webtiles_input import send_keys
+from controller.action_to_queue import action_json_to_queue
+from policy.policy_openai import choose_action_openai
+from webtiles.webtiles_reader import get_state
+from webtiles.webtiles_input import send_keys
 
 OUT_DIR = r"C:\Users\Oh\Desktop\ai_dcss\run_logs"
 DUMP_PATH = os.path.join(OUT_DIR, "console_dump.txt")
