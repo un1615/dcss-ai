@@ -3,3 +3,6 @@ __pycache__/
 run_logs/
 memory.json
 STOP.txt
+# local tools
+/tools_fix_imports.py
+
