@@ -218,10 +218,10 @@ if __name__ == "__main__":
 
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     reader_worker = subprocess.Popen(
-        [sys.executable, "reader_worker.py"], creationflags=creationflags
+        [sys.executable, "workers/reader_worker.py"], creationflags=creationflags
     )
     input_worker = subprocess.Popen(
-        [sys.executable, "input_worker.py"], creationflags=creationflags
+        [sys.executable, "workers/input_worker.py"], creationflags=creationflags
     )
 
     print(f"[controller] reader_worker pid={reader_worker.pid} started.")
