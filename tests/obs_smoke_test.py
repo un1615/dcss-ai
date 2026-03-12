@@ -11,5 +11,9 @@ if __name__ == "__main__":
     print("WHERE:", obs.where)
     print("TURN:", obs.turn, "IDLE:", obs.idle_time)
     print("LOG (last 5):")
-    for line in obs.recent_log_lines[-5:]:
+    for line in obs.recent_msgs[-5:]:
         print(" -", line)
+    print("SCREEN_TEXT:")
+    print(obs.screen_text[:2000] if obs.screen_text else "(none)")
+    print("ASCII_MAP:")
+    print(obs.ascii_map if obs.ascii_map else "(none)")

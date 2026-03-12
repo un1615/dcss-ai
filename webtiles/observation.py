@@ -23,6 +23,9 @@ class Observation:
     recent_msgs: List[str]
     msg_tail_raw: List[str]
 
+    ascii_map: str | None = None
+    screen_text: str | None = None
+
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -39,13 +42,6 @@ def _json_unescape(s: str) -> str:
 
 
 def _extract_text_messages_from_msg_tail(msg_tail_items):
-    """
-    msg_tail은 JSON 문자열 리스트지만 종종 (trunc) 때문에 깨진다.
-    그래서
-    1) json.loads 시도
-    2) 실패하면 regex fallback
-    """
-
     out = []
 
     if not isinstance(msg_tail_items, list):
@@ -65,7 +61,6 @@ def _extract_text_messages_from_msg_tail(msg_tail_items):
             parsed = None
 
         if isinstance(parsed, dict):
-
             msgs = parsed.get("msgs", [])
 
             for m in msgs:
@@ -87,14 +82,10 @@ def _extract_text_messages_from_msg_tail(msg_tail_items):
 
             continue
 
-        # fallback regex
         for g in text_re.findall(item):
-
             unescaped = _json_unescape(g)
-
             out.append(_strip_tags(unescaped).strip())
 
-    # 연속 중복 제거
     dedup = []
 
     for t in out:
@@ -105,6 +96,72 @@ def _extract_text_messages_from_msg_tail(msg_tail_items):
             dedup.append(t)
 
     return dedup
+
+
+def _build_ascii_map_from_msg_tail(msg_tail_raw: List[str]) -> str | None:
+    # 오늘은 아직 구현하지 않고 자리만 만든다.
+    # 먼저 msg_tail_raw 내부 구조를 확인한 뒤 파싱 로직을 넣을 예정.
+    return None
+
+
+def _build_ascii_map_from_screen_text(screen_text: str) -> str | None:
+    if not screen_text:
+        return None
+
+    lines = [line.rstrip("\n") for line in screen_text.splitlines()]
+    if not lines:
+        return None
+
+    # 맵 후보 줄만 고른다.
+    # @, #, ., †, ∆ 등이 있는 줄을 우선 맵 줄로 본다.
+    map_candidates = []
+    for line in lines:
+        if any(ch in line for ch in ("@", "#", ".", "†", "∆", "<", ">")):
+            map_candidates.append(line.rstrip())
+
+    if not map_candidates:
+        return None
+
+    cleaned = []
+
+    # 왼쪽 맵 영역만 최대한 남기기
+    # 오른쪽 상태창 텍스트(Health, Magic, XL, Place...)가 붙는 경우가 있어
+    # 그런 키워드가 나오기 전까지만 잘라낸다.
+    cut_keywords = [
+        "Health:",
+        "Magic:",
+        "AC:",
+        "EV:",
+        "SH:",
+        "XL:",
+        "Place:",
+        "Noise:",
+        "Time:",
+        "a) ",
+        "Throw:",
+    ]
+
+    for line in map_candidates:
+        cut_pos = len(line)
+        for kw in cut_keywords:
+            pos = line.find(kw)
+            if pos != -1:
+                cut_pos = min(cut_pos, pos)
+
+        left = line[:cut_pos].rstrip()
+
+        # 맵 문자만 남긴다. (중요: '.' 포함)
+        allowed = set(" #.@<>†∆:+")
+        row = "".join(ch for ch in left if ch in allowed)
+
+        # 공백만 있는 줄은 버린다
+        if row.strip() and len(row.strip()) >= 8:
+            cleaned.append(row.rstrip())
+
+    if not cleaned:
+        return None
+
+    return "\n".join(cleaned)
 
 
 def fetch_observation(
@@ -124,8 +181,14 @@ def fetch_observation(
         raise RuntimeError("state not ok")
 
     msg_tail_raw = s.get("msg_tail", []) or []
+    screen_text = s.get("screen_text", "") or ""
+    ascii_map = _build_ascii_map_from_screen_text(screen_text)
 
-    # --- input_mode 파싱 추가 ---
+    print("=== msg_tail_raw sample ===")
+    for i, item in enumerate(msg_tail_raw[:3]):
+        print(f"\n--- item {i} ---")
+        print(item[:2000] if isinstance(item, str) else item)
+
     input_mode = None
     for item in msg_tail_raw:
         if not isinstance(item, str):
@@ -169,4 +232,6 @@ def fetch_observation(
         msg_tail_raw=msg_tail_raw,
         recent_text=recent_text,
         input_mode=input_mode,
+        screen_text=screen_text,
+        ascii_map=ascii_map,
     )

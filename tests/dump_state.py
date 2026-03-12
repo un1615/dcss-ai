@@ -8,7 +8,7 @@ BASE_URL = "http://localhost:9090"
 USER = "MinZZang"
 
 if __name__ == "__main__":
-    url = f"{BASE_URL}/bot/state?username={USER}"
+    url = f"{BASE_URL}/bot/state?username={USER}&debug=1"
     j = requests.get(url, timeout=5).json()
 
     print("TOP-LEVEL KEYS:", list(j.keys()))

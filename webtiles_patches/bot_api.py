@@ -7,6 +7,145 @@ import os
 
 from webtiles import ws_handler
 
+import re
+
+_ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_CSI_CURSOR_RE = re.compile(r"\x1b\[(\d*);(\d*)H")
+_CSI_ERASE_LINE_RE = re.compile(r"\x1b\[K")
+_CSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+_OTHER_ESC_RE = re.compile(r"\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
+
+
+def _render_ansi_screen(output_buffer, width=80, height=24) -> str:
+    if not isinstance(output_buffer, (bytes, bytearray)):
+        return ""
+
+    try:
+        text = output_buffer.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+    screen = [[" " for _ in range(width)] for _ in range(height)]
+    row, col = 0, 0
+    i = 0
+    n = len(text)
+
+    def clamp():
+        nonlocal row, col
+        row = max(0, min(height - 1, row))
+        col = max(0, min(width - 1, col))
+
+    while i < n:
+        ch = text[i]
+
+        # CSI cursor position: ESC[row;colH
+        if text.startswith("\x1b[", i):
+            m = _CSI_CURSOR_RE.match(text, i)
+            if m:
+                r = int(m.group(1) or "1")
+                c = int(m.group(2) or "1")
+                row = r - 1
+                col = c - 1
+                clamp()
+                i = m.end()
+                continue
+
+            m = _CSI_ERASE_LINE_RE.match(text, i)
+            if m:
+                for c2 in range(col, width):
+                    screen[row][c2] = " "
+                i = m.end()
+                continue
+
+            m = _CSI_SGR_RE.match(text, i)
+            if m:
+                i = m.end()
+                continue
+
+            # 처리 안 하는 CSI는 마지막 알파벳까지 스킵
+            j = i + 2
+            while j < n and not ("@" <= text[j] <= "~"):
+                j += 1
+            i = min(j + 1, n)
+            continue
+
+        # OSC / 기타 ESC 시퀀스 제거
+        m = _OTHER_ESC_RE.match(text, i)
+        if m:
+            i = m.end()
+            continue
+
+        # 제어문자 처리
+        if ch == "\r":
+            col = 0
+            i += 1
+            continue
+        if ch == "\n":
+            row += 1
+            col = 0
+            clamp()
+            i += 1
+            continue
+        if ch == "\x0f":
+            i += 1
+            continue
+        if ord(ch) < 32 or ord(ch) == 127:
+            i += 1
+            continue
+
+        # 일반 문자 출력
+        if 0 <= row < height and 0 <= col < width:
+            screen[row][col] = ch
+        col += 1
+        if col >= width:
+            col = width - 1
+        i += 1
+
+    lines = ["".join(line).rstrip() for line in screen]
+    return "\n".join(lines).rstrip()
+
+
+def _clean_terminal_text(text: str) -> str:
+    # ANSI escape 제거
+    text = _ANSI_RE.sub("", text)
+
+    # \r\n / \r 정리
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # 남은 제어문자 제거 (단, \n은 살림)
+    text = _CTRL_RE.sub("", text)
+
+    # 빈 줄 너무 많으면 압축
+    lines = [line.rstrip() for line in text.split("\n")]
+    return "\n".join(lines)
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _extract_screen_text_from_output_buffer(output_buffer) -> str:
+    if not isinstance(output_buffer, (bytes, bytearray)):
+        return ""
+
+    try:
+        text = output_buffer.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+    # ANSI 대충 제거
+    import re
+
+    text = re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+
+    if len(text) > 6000:
+        text = text[-6000:]
+
+    return text
+
 
 def _socket_debug_snapshot():
     """디버그용: 현재 소켓 목록 요약(개인정보 최소)"""
@@ -607,6 +746,24 @@ class BotStateHandler(BotBaseHandler):
                     turn = t
         except Exception:
             pass
+        screen_text = ""
+        try:
+            p = getattr(proc, "process", None)
+            if p is not None:
+                output_buffer = getattr(p, "output_buffer", None)
+
+                width, height = 80, 24
+                termsize = getattr(p, "termsize", None)
+                if isinstance(termsize, (list, tuple)) and len(termsize) >= 2:
+                    width, height = int(termsize[0]), int(termsize[1])
+
+                screen_text = _render_ansi_screen(
+                    output_buffer,
+                    width=width,
+                    height=height,
+                )
+        except Exception:
+            pass
 
         # ✅ 핵심: socket에 쌓인 링버퍼에서 최근 "메시지 로그" 뽑기
         ring = getattr(s, "_bot_msg_ring", []) or []
@@ -629,15 +786,12 @@ class BotStateHandler(BotBaseHandler):
             ),
             # ✅ 이제 msg_tail은 "진짜 로그 후보"가 들어옴
             "msg_tail": msg_tail,
+            "screen_text": screen_text,
         }
 
         if debug:
-            payload["debug_bot_msg_ring_len"] = len(ring)
-            payload["debug_write_message_calls"] = getattr(
-                s, "_bot_write_message_calls", 0
-            )
-            payload["debug_wsconn_write_calls"] = getattr(
-                s, "_bot_wsconn_write_calls", 0
+            payload["debug_bot_msg_ring_len"] = len(
+                getattr(s, "_bot_msg_ring", []) or []
             )
             payload["debug_write_message_calls"] = getattr(
                 s, "_bot_write_message_calls", 0
@@ -648,10 +802,106 @@ class BotStateHandler(BotBaseHandler):
             payload["debug_wsconn_write_raw_calls"] = getattr(
                 s, "_bot_wsconn_write_raw_calls", 0
             )
-            payload["debug_bot_msg_ring_len"] = len(
-                getattr(s, "_bot_msg_ring", []) or []
-            )
 
+            proc_dict = getattr(proc, "__dict__", {}) or {}
+
+            payload["debug_proc_keys"] = sorted(list(proc_dict.keys()))[:200]
+            payload["debug_where_raw"] = _json_safe(proc_dict.get("where"))
+            payload["debug_scan_log_candidates"] = _scan_log_candidates(proc_dict)
+            payload["debug_turn_candidates"] = _proc_turn_candidates(proc)
+            payload["debug_socket_snapshot"] = _socket_debug_snapshot()
+            # proc.conn / proc.process / queue_messages 더 보기
+            try:
+                conn = getattr(proc, "conn", None)
+                if conn is not None:
+                    payload["debug_conn_type"] = str(type(conn))
+                    payload["debug_conn_dir"] = [
+                        x for x in dir(conn) if not x.startswith("_")
+                    ][:150]
+                    payload["debug_conn_dict_keys"] = sorted(
+                        list(getattr(conn, "__dict__", {}).keys())
+                    )[:150]
+            except Exception as e:
+                payload["debug_conn_err"] = str(e)
+
+            try:
+                p = getattr(proc, "process", None)
+                if p is not None:
+                    payload["debug_process_type"] = str(type(p))
+                    payload["debug_process_dir"] = [
+                        x for x in dir(p) if not x.startswith("_")
+                    ][:150]
+                    payload["debug_process_dict_keys"] = sorted(
+                        list(getattr(p, "__dict__", {}).keys())
+                    )[:150]
+                    payload["debug_process_termsize"] = _json_safe(
+                        getattr(p, "termsize", None)
+                    )
+            except Exception as e:
+                payload["debug_process_err"] = str(e)
+
+            try:
+                qm = getattr(proc, "queue_messages", None)
+                payload["debug_queue_messages_type"] = str(type(qm))
+                if isinstance(qm, list):
+                    payload["debug_queue_messages_len"] = len(qm)
+                    payload["debug_queue_messages_tail"] = [
+                        _json_safe(x) for x in qm[-10:]
+                    ]
+                else:
+                    payload["debug_queue_messages_repr"] = _json_safe(qm)
+            except Exception as e:
+                payload["debug_queue_messages_err"] = str(e)
+
+            for name in ["crawl", "game", "state", "player"]:
+                try:
+                    obj = getattr(proc, name, None)
+                    if obj is not None:
+                        payload[f"debug_{name}_type"] = str(type(obj))
+                        payload[f"debug_{name}_dir"] = [
+                            x for x in dir(obj) if not x.startswith("_")
+                        ][:120]
+                except Exception as e:
+                    payload[f"debug_{name}_err"] = str(e)
+            try:
+                conn = getattr(proc, "conn", None)
+                if conn is not None:
+                    msg_buffer = getattr(conn, "msg_buffer", None)
+                    payload["debug_msg_buffer_type"] = str(type(msg_buffer))
+                    if isinstance(msg_buffer, list):
+                        payload["debug_msg_buffer_len"] = len(msg_buffer)
+                        payload["debug_msg_buffer_tail"] = [
+                            _json_safe(x) for x in msg_buffer[-10:]
+                        ]
+                    else:
+                        payload["debug_msg_buffer_repr"] = _json_safe(msg_buffer)
+            except Exception as e:
+                payload["debug_msg_buffer_err"] = str(e)
+
+            try:
+                p = getattr(proc, "process", None)
+                if p is not None:
+                    output_buffer = getattr(p, "output_buffer", None)
+                    error_buffer = getattr(p, "error_buffer", None)
+
+                    payload["debug_output_buffer_type"] = str(type(output_buffer))
+                    payload["debug_error_buffer_type"] = str(type(error_buffer))
+
+                    if isinstance(output_buffer, (bytes, bytearray)):
+                        payload["debug_output_buffer_len"] = len(output_buffer)
+                        payload["debug_output_buffer_tail"] = repr(
+                            output_buffer[-1000:]
+                        )
+                    else:
+                        payload["debug_output_buffer_repr"] = _json_safe(output_buffer)
+
+                    if isinstance(error_buffer, (bytes, bytearray)):
+                        payload["debug_error_buffer_len"] = len(error_buffer)
+                        payload["debug_error_buffer_tail"] = repr(error_buffer[-1000:])
+                    else:
+                        payload["debug_error_buffer_repr"] = _json_safe(error_buffer)
+            except Exception as e:
+                payload["debug_output_buffer_err"] = str(e)
         return self.write_json(payload)
 
 
