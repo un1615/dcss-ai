@@ -25,6 +25,7 @@ class Observation:
 
     ascii_map: str | None = None
     screen_text: str | None = None
+    player_pos: tuple[int, int] | None = None
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -96,12 +97,6 @@ def _extract_text_messages_from_msg_tail(msg_tail_items):
             dedup.append(t)
 
     return dedup
-
-
-def _build_ascii_map_from_msg_tail(msg_tail_raw: List[str]) -> str | None:
-    # 오늘은 아직 구현하지 않고 자리만 만든다.
-    # 먼저 msg_tail_raw 내부 구조를 확인한 뒤 파싱 로직을 넣을 예정.
-    return None
 
 
 def _build_ascii_map_from_screen_text(screen_text: str) -> str | None:
@@ -183,6 +178,7 @@ def fetch_observation(
     msg_tail_raw = s.get("msg_tail", []) or []
     screen_text = s.get("screen_text", "") or ""
     ascii_map = _build_ascii_map_from_screen_text(screen_text)
+    player_pos = find_player_position(ascii_map)
 
     print("=== msg_tail_raw sample ===")
     for i, item in enumerate(msg_tail_raw[:3]):
@@ -234,4 +230,16 @@ def fetch_observation(
         input_mode=input_mode,
         screen_text=screen_text,
         ascii_map=ascii_map,
+        player_pos=player_pos,
     )
+
+
+def find_player_position(ascii_map: str):
+    lines = ascii_map.splitlines()
+
+    for y, line in enumerate(lines):
+        for x, ch in enumerate(line):
+            if ch == "@":
+                return (x, y)
+
+    return None

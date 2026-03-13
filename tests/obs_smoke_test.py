@@ -17,3 +17,4 @@ if __name__ == "__main__":
     print(obs.screen_text[:2000] if obs.screen_text else "(none)")
     print("ASCII_MAP:")
     print(obs.ascii_map if obs.ascii_map else "(none)")
+    print("PLAYER_POS:", obs.player_pos)
