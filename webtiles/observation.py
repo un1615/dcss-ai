@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 import requests
 import json
 import re
+from core.state_parser import find_visible_monsters
 
 
 @dataclass
@@ -26,6 +27,7 @@ class Observation:
     ascii_map: str | None = None
     screen_text: str | None = None
     player_pos: tuple[int, int] | None = None
+    visible_monsters: list | None = None
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -111,9 +113,18 @@ def _build_ascii_map_from_screen_text(screen_text: str) -> str | None:
     # @, #, ., †, ∆ 등이 있는 줄을 우선 맵 줄로 본다.
     map_candidates = []
     for line in lines:
-        if any(ch in line for ch in ("@", "#", ".", "†", "∆", "<", ">")):
-            map_candidates.append(line.rstrip())
+        stripped = line.rstrip()
 
+        # 메시지 줄 제외
+        if stripped.startswith("_"):
+            continue
+        if stripped.startswith("There is "):
+            continue
+        if stripped.startswith("You "):
+            continue
+
+        if any(ch in stripped for ch in ("@", "#", ".", "†", "∆", "<", ">")):
+            map_candidates.append(stripped)
     if not map_candidates:
         return None
 
@@ -146,8 +157,10 @@ def _build_ascii_map_from_screen_text(screen_text: str) -> str | None:
         left = line[:cut_pos].rstrip()
 
         # 맵 문자만 남긴다. (중요: '.' 포함)
-        allowed = set(" #.@<>†∆:+")
-        row = "".join(ch for ch in left if ch in allowed)
+        allowed = set(
+            " #.@<>†∆:+[](){}'/\\|-_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        )
+        row = "".join(ch for ch in left if ch in allowed or ch.isdigit())
 
         # 공백만 있는 줄은 버린다
         if row.strip() and len(row.strip()) >= 8:
@@ -179,7 +192,9 @@ def fetch_observation(
     screen_text = s.get("screen_text", "") or ""
     ascii_map = _build_ascii_map_from_screen_text(screen_text)
     player_pos = find_player_position(ascii_map)
-
+    visible_monsters = find_visible_monsters(
+        ascii_map.splitlines() if ascii_map else [], player_pos
+    )
     print("=== msg_tail_raw sample ===")
     for i, item in enumerate(msg_tail_raw[:3]):
         print(f"\n--- item {i} ---")
@@ -231,10 +246,14 @@ def fetch_observation(
         screen_text=screen_text,
         ascii_map=ascii_map,
         player_pos=player_pos,
+        visible_monsters=visible_monsters,
     )
 
 
-def find_player_position(ascii_map: str):
+def find_player_position(ascii_map: str | None):
+    if not ascii_map:
+        return None
+
     lines = ascii_map.splitlines()
 
     for y, line in enumerate(lines):

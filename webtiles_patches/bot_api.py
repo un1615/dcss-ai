@@ -12,12 +12,18 @@ import re
 _ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _CSI_CURSOR_RE = re.compile(r"\x1b\[(\d*);(\d*)H")
-_CSI_ERASE_LINE_RE = re.compile(r"\x1b\[K")
+_CSI_ERASE_LINE_RE = re.compile(r"\x1b\[(\d*)K")
 _CSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 _OTHER_ESC_RE = re.compile(r"\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
+_CSI_UP_RE = re.compile(r"\x1b\[(\d*)A")
+_CSI_DOWN_RE = re.compile(r"\x1b\[(\d*)B")
+_CSI_RIGHT_RE = re.compile(r"\x1b\[(\d*)C")
+_CSI_LEFT_RE = re.compile(r"\x1b\[(\d*)D")
+_CSI_VPA_RE = re.compile(r"\x1b\[(\d*)d")
 
 
 def _render_ansi_screen(output_buffer, width=80, height=24) -> str:
+    print("DEBUG: _render_ansi_screen called")
     if not isinstance(output_buffer, (bytes, bytearray)):
         return ""
 
@@ -25,6 +31,19 @@ def _render_ansi_screen(output_buffer, width=80, height=24) -> str:
         text = output_buffer.decode("utf-8", errors="replace")
     except Exception:
         return ""
+    marker = "\x1b[H\x1b[J"
+    idx = text.rfind(marker)
+    if idx != -1:
+        text = text[idx:]
+    print("DEBUG: decoded text len =", len(text))
+    idx = text.find("Press")
+    if idx != -1:
+        start = max(0, idx - 120)
+        end = min(len(text), idx + 220)
+        print("RAW AROUND PRESS:")
+        print(repr(text[start:end]))
+    else:
+        print("RAW AROUND PRESS: NOT FOUND")
 
     screen = [[" " for _ in range(width)] for _ in range(height)]
     row, col = 0, 0
@@ -36,11 +55,53 @@ def _render_ansi_screen(output_buffer, width=80, height=24) -> str:
         row = max(0, min(height - 1, row))
         col = max(0, min(width - 1, col))
 
+    def newline():
+        nonlocal row, col, screen
+
+        if row == height - 1:
+            screen.pop(0)
+            screen.append([" "] * width)
+        else:
+            row += 1
+
+        col = 0
+
     while i < n:
         ch = text[i]
 
         # CSI cursor position: ESC[row;colH
         if text.startswith("\x1b[", i):
+            m = _CSI_UP_RE.match(text, i)
+            if m:
+                amount = int(m.group(1) or "1")
+                row -= amount
+                clamp()
+                i = m.end()
+                continue
+
+            m = _CSI_DOWN_RE.match(text, i)
+            if m:
+                amount = int(m.group(1) or "1")
+                row += amount
+                clamp()
+                i = m.end()
+                continue
+
+            m = _CSI_RIGHT_RE.match(text, i)
+            if m:
+                amount = int(m.group(1) or "1")
+                col += amount
+                clamp()
+                i = m.end()
+                continue
+
+            m = _CSI_LEFT_RE.match(text, i)
+            if m:
+                amount = int(m.group(1) or "1")
+                col -= amount
+                clamp()
+                i = m.end()
+                continue
             m = _CSI_CURSOR_RE.match(text, i)
             if m:
                 r = int(m.group(1) or "1")
@@ -50,11 +111,28 @@ def _render_ansi_screen(output_buffer, width=80, height=24) -> str:
                 clamp()
                 i = m.end()
                 continue
-
+            m = _CSI_VPA_RE.match(text, i)
+            if m:
+                r = int(m.group(1) or "1")
+                row = r - 1
+                clamp()
+                i = m.end()
+                continue
             m = _CSI_ERASE_LINE_RE.match(text, i)
             if m:
-                for c2 in range(col, width):
-                    screen[row][c2] = " "
+                mode = m.group(1)
+                mode = int(mode) if mode else 0
+
+                if mode == 0:
+                    for c2 in range(col, width):
+                        screen[row][c2] = " "
+                elif mode == 1:
+                    for c2 in range(0, col + 1):
+                        screen[row][c2] = " "
+                elif mode == 2:
+                    for c2 in range(0, width):
+                        screen[row][c2] = " "
+
                 i = m.end()
                 continue
 
@@ -67,6 +145,17 @@ def _render_ansi_screen(output_buffer, width=80, height=24) -> str:
             j = i + 2
             while j < n and not ("@" <= text[j] <= "~"):
                 j += 1
+
+            seq = text[i : min(j + 1, n)]
+
+            # ESC[J / ESC[0J / ESC[2J → 화면 클리어 계열
+            if seq in ("\x1b[J", "\x1b[0J", "\x1b[2J"):
+                screen = [[" " for _ in range(width)] for _ in range(height)]
+                row, col = 0, 0
+                i = j + 1
+                continue
+
+            print("UNHANDLED CSI:", repr(seq))
             i = min(j + 1, n)
             continue
 
@@ -82,9 +171,7 @@ def _render_ansi_screen(output_buffer, width=80, height=24) -> str:
             i += 1
             continue
         if ch == "\n":
-            row += 1
-            col = 0
-            clamp()
+            newline()
             i += 1
             continue
         if ch == "\x0f":
@@ -99,11 +186,11 @@ def _render_ansi_screen(output_buffer, width=80, height=24) -> str:
             screen[row][col] = ch
         col += 1
         if col >= width:
-            col = width - 1
+            newline()
         i += 1
 
-    lines = ["".join(line).rstrip() for line in screen]
-    return "\n".join(lines).rstrip()
+    lines = ["".join(line) for line in screen]
+    return "\n".join(lines)
 
 
 def _clean_terminal_text(text: str) -> str:
@@ -696,6 +783,87 @@ def _ensure_bot_msg_hook_installed_for_socket(s):
         pass
 
 
+def _scan_object_fields(obj, label, keywords=None, max_items=80):
+    if obj is None:
+        return []
+
+    if keywords is None:
+        keywords = [
+            "screen",
+            "display",
+            "buffer",
+            "grid",
+            "cell",
+            "map",
+            "view",
+            "glyph",
+            "tile",
+            "term",
+            "terminal",
+            "console",
+            "line",
+            "lines",
+            "row",
+            "rows",
+            "col",
+            "cols",
+            "cursor",
+            "ttyrec",
+            "record",
+            "recorder",
+        ]
+
+    out = []
+
+    for name in dir(obj):
+        if name.startswith("_"):
+            continue
+
+        lname = name.lower()
+        if not any(kw in lname for kw in keywords):
+            continue
+
+        try:
+            v = getattr(obj, name)
+        except Exception as e:
+            out.append(
+                {
+                    "name": f"{label}.{name}",
+                    "error": str(e),
+                }
+            )
+            continue
+
+        item = {
+            "name": f"{label}.{name}",
+            "type": str(type(v)),
+        }
+
+        try:
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                item["value"] = v
+            elif isinstance(v, (bytes, bytearray)):
+                item["len"] = len(v)
+                item["preview"] = v[:500].decode("utf-8", errors="replace")
+            elif isinstance(v, (list, tuple)):
+                item["len"] = len(v)
+                item["preview"] = [str(x) for x in list(v)[:5]]
+            elif isinstance(v, dict):
+                item["len"] = len(v)
+                item["keys"] = list(v.keys())[:20]
+            else:
+                item["repr"] = str(v)
+        except Exception as e:
+            item["inspect_error"] = str(e)
+
+        out.append(item)
+
+        if len(out) >= max_items:
+            break
+
+    return out
+
+
 class BotBaseHandler(tornado.web.RequestHandler):
     def prepare(self):
         if not _is_local(self.request.remote_ip):
@@ -762,6 +930,23 @@ class BotStateHandler(BotBaseHandler):
                     width=width,
                     height=height,
                 )
+                print("=== BOT_API TERM SIZE ===", width, height)
+
+                if isinstance(output_buffer, (bytes, bytearray)):
+                    print("=== OUTPUT BUFFER LEN ===", len(output_buffer))
+                    tail = output_buffer[-3000:]
+                    try:
+                        print("=== OUTPUT BUFFER TAIL (decoded) START ===")
+                        print(tail.decode("utf-8", errors="replace"))
+                        print("=== OUTPUT BUFFER TAIL (decoded) END ===")
+                    except Exception as e:
+                        print("decode err:", e)
+
+                print("=== RENDERED SCREEN START ===")
+                for i, line in enumerate(screen_text.splitlines()):
+                    print(f"{i:02d}: {repr(line)}")
+                print("=== RENDERED SCREEN END ===")
+                print("HAS @:", "@" in screen_text)
         except Exception:
             pass
 
@@ -902,6 +1087,42 @@ class BotStateHandler(BotBaseHandler):
                         payload["debug_error_buffer_repr"] = _json_safe(error_buffer)
             except Exception as e:
                 payload["debug_output_buffer_err"] = str(e)
+            try:
+                payload["debug_scan_proc_fields"] = _scan_object_fields(proc, "proc")
+            except Exception as e:
+                payload["debug_scan_proc_fields_err"] = str(e)
+
+            try:
+                p = getattr(proc, "process", None)
+                payload["debug_scan_process_fields"] = _scan_object_fields(
+                    p, "proc.process"
+                )
+            except Exception as e:
+                payload["debug_scan_process_fields_err"] = str(e)
+
+            for subname in ["crawl", "game", "state", "player"]:
+                try:
+                    obj = getattr(proc, subname, None)
+                    payload[f"debug_scan_{subname}_fields"] = _scan_object_fields(
+                        obj, f"proc.{subname}"
+                    )
+                except Exception as e:
+                    payload[f"debug_scan_{subname}_fields_err"] = str(e)
+            try:
+                p = getattr(proc, "process", None)
+                ttyrec = getattr(p, "ttyrec", None) if p is not None else None
+                payload["debug_scan_ttyrec_fields"] = _scan_object_fields(
+                    ttyrec, "proc.process.ttyrec"
+                )
+            except Exception as e:
+                payload["debug_scan_ttyrec_fields_err"] = str(e)
+            try:
+                ring = getattr(s, "_bot_msg_ring", []) or []
+                payload["debug_bot_msg_ring_tail_raw"] = [
+                    _json_safe(x, max_len=2000) for x in list(ring)[-10:]
+                ]
+            except Exception as e:
+                payload["debug_bot_msg_ring_tail_raw_err"] = str(e)
         return self.write_json(payload)
 
 
