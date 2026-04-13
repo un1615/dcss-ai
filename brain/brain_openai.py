@@ -10,40 +10,84 @@ from webtiles.observation import Observation
 from openai import OpenAI
 
 
-ALLOWED_ACTIONS = {
-    "TAB": "\t",
-    "AUTOEXPLORE": "o",
-    "WAIT": ".",
-    "REST": "5",
-    "SPACE": " ",
-    "ESC": "\x1b",
-}
+client = OpenAI()
 
-SYSTEM_PROMPT = """You are the 'Brain' of a Dungeon Crawl Stone Soup (DCSS) autopilot.
-You must output a single JSON object with keys:
-- action: one of ["TAB","AUTOEXPLORE","WAIT","REST","SPACE","ESC"]
-- reason: short reason in Korean (max 1 sentence)
+
+def build_decision_prompt(obs_dict: dict) -> str:
+    return f"""
+You are controlling a Dungeon Crawl Stone Soup character.
+
+Current observation:
+{json.dumps(obs_dict, ensure_ascii=False)}
+
+Choose exactly one next action.
 
 Rules:
-- If there is any sign of danger/monsters nearby -> action="TAB"
-- If the game is waiting for --more--/confirmation -> action="SPACE"
-- Otherwise explore -> action="AUTOEXPLORE"
-- Never output anything except valid JSON.
-"""
+- Use only movement directions.
+- If a visible monster exists, move toward the nearest monster.
+- If no visible monsters exist, move in a reasonable exploration direction.
+- Do not explain for long.
+
+Return JSON only.
+Format:
+{{
+  "action": "move",
+  "dir": "h|j|k|l|y|u|b|n",
+  "reason": "short reason"
+}}
+
+Direction meaning:
+h = left
+j = down
+k = up
+l = right
+y = up-left
+u = up-right
+b = down-left
+n = down-right
+""".strip()
 
 
-def _build_obs_text(obs: Observation) -> str:
-    # 최근 메시지 몇 개만 AI에 제공 (너무 길면 비용/혼선 ↑)
-    last_msgs: List[str] = obs.recent_msgs[-10:] if obs.recent_msgs else []
-    msg_block = "\n".join(f"- {m}" for m in last_msgs)
+def decide_next_action(obs_dict: dict, model: str = "gpt-5") -> dict:
+    prompt = build_decision_prompt(obs_dict)
 
-    return f"""STATE
-where: {obs.where}
-turn: {obs.turn}
-idle_time: {obs.idle_time}
-recent_messages:
-{msg_block}
-"""
+    resp = client.responses.create(
+        model=model,
+        input=prompt,
+    )
+
+    print("RAW RESPONSE:", resp)
+
+    try:
+        text = resp.output_text.strip()
+        print("MODEL TEXT:", text)
+    except Exception as e:
+        print("TEXT EXTRACT ERROR:", e)
+        return {"type": "move", "dir": "h", "reason": "response parse failed"}
+
+    try:
+        data = json.loads(text)
+    except Exception:
+        return {
+            "type": "move",
+            "dir": "h",
+            "reason": f"json parse failed: {text[:120]}",
+        }
+
+    action = data.get("action")
+    direction = data.get("dir")
+    reason = data.get("reason", "")
+
+    allowed_dirs = {"h", "j", "k", "l", "y", "u", "b", "n"}
+
+    if action != "move" or direction not in allowed_dirs:
+        return {"type": "move", "dir": "h", "reason": f"invalid ai action: {data}"}
+
+    return {
+        "type": "move",
+        "dir": direction,
+        "reason": reason,
+    }
 
 
 class OpenAIBrain:

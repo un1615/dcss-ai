@@ -6,6 +6,9 @@ import requests
 import json
 import re
 from core.state_parser import find_visible_monsters
+from core.state_parser import split_screen_regions
+from core.state_parser import find_player_position
+from core.state_parser import extract_hp
 
 
 @dataclass
@@ -28,6 +31,7 @@ class Observation:
     screen_text: str | None = None
     player_pos: tuple[int, int] | None = None
     visible_monsters: list | None = None
+    hp_info: dict | None = None
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -190,10 +194,14 @@ def fetch_observation(
 
     msg_tail_raw = s.get("msg_tail", []) or []
     screen_text = s.get("screen_text", "") or ""
-    ascii_map = _build_ascii_map_from_screen_text(screen_text)
+
+    regions = split_screen_regions(screen_text)
+    hp_info = extract_hp(regions["status_lines"])
+    ascii_map = "\n".join(regions["map_lines"])
+
     player_pos = find_player_position(ascii_map)
     visible_monsters = find_visible_monsters(
-        ascii_map.splitlines() if ascii_map else [], player_pos
+        regions["map_lines"] if ascii_map else [], player_pos
     )
     print("=== msg_tail_raw sample ===")
     for i, item in enumerate(msg_tail_raw[:3]):
@@ -247,18 +255,28 @@ def fetch_observation(
         ascii_map=ascii_map,
         player_pos=player_pos,
         visible_monsters=visible_monsters,
+        hp_info=hp_info,
     )
 
 
-def find_player_position(ascii_map: str | None):
-    if not ascii_map:
-        return None
+def observation_to_prompt_dict(obs):
+    return {
+        "player_pos": obs.player_pos,
+        "visible_monsters": obs.visible_monsters,
+        "hp_info": obs.hp_info,
+        "map_lines": obs.ascii_map.splitlines() if obs.ascii_map else [],
+        "recent_msgs": obs.recent_msgs,
+    }
 
-    lines = ascii_map.splitlines()
 
-    for y, line in enumerate(lines):
-        for x, ch in enumerate(line):
-            if ch == "@":
-                return (x, y)
-
-    return None
+def observation_to_ai_dict(obs: Observation) -> dict:
+    return {
+        "where": obs.where,
+        "turn": obs.turn,
+        "player_pos": obs.player_pos,
+        "hp_info": obs.hp_info,
+        "visible_monsters": obs.visible_monsters or [],
+        "map_lines": obs.ascii_map.splitlines() if obs.ascii_map else [],
+        "recent_msgs": obs.recent_msgs or [],
+        "recent_text": obs.recent_text or "",
+    }

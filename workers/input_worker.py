@@ -15,8 +15,7 @@ import win32event
 import psutil
 
 OUT_DIR = r"C:\Users\Oh\Desktop\ai_dcss\run_logs"
-QUEUE_PATH = os.path.join(OUT_DIR, "queue.txt")
-
+QUEUE_PATH = r"C:\Users\Oh\Desktop\ai_dcss\run_logs\queue.txt"
 PROC_NAMES = ["crawl-console.exe", "crawl.exe"]
 
 LAST_ATTACK_TIME = 0.0
